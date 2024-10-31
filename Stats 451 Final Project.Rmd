@@ -1,0 +1,137 @@
+---
+title: "Stats 451 Final Project"
+author: "Alyssa Yang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load in libraries
+```{r}
+library(readxl)
+library(dplyr)
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+# Read in data, remove NA values
+```{r}
+data <- read_xlsx("combined_michigan_law.xlsx")
+data <- na.omit(data)
+# View(data)
+nrow(data)
+```
+
+# Find the mean LSAT score and mean GPA of those who were accepted
+```{r}
+accepted <- data[data$Status == "Accepted",]
+
+mean_lsat = mean(accepted$LSAT)
+mean_lsat
+
+mean_gpa = mean(accepted$GPA)
+mean_gpa
+```
+
+
+# Select the first 200 datapoints from each year
+```{r}
+data <- data %>%
+  group_by(Year) %>%
+  # Select the first 200 rows within each group
+  slice_head(n = 200) %>%
+  ungroup()
+```
+
+# STAN model
+```{r}
+model_string <- "
+data {
+  int<lower=0> N;                  // Number of observations
+  int<lower=0,upper=1> status[N];  // Accepted (1) or Rejected (0)
+  vector[N] lsat;                  // LSAT
+  vector[N] gpa;                   // GPA
+  int<lower=0,upper=1> urm[N];     // URM indicator
+  int<lower=0,upper=1> intl[N];    // International indicator
+}
+
+parameters {
+  real alpha;                // Intercept
+  vector[4] beta;            // Coefficients for predictors
+}
+
+model {
+  alpha ~ normal(0.284, 100);         // Prior for intercept
+  beta ~ normal(0, 100);           // Prior for coefficients
+  
+  // Likelihood
+  for (i in 1:N) {
+    real p;
+    p = inv_logit(alpha + beta[1] * lsat[i] + beta[2] * gpa[i] + beta[3] * urm[i] + beta[4] * intl[i]);
+    status[i] ~ binomial(1, p); // Likelihood
+  }
+}
+"
+
+# Prepare data
+data_list <- list(
+  N = nrow(data),
+  status = as.integer(data$Status == "Accepted"),
+  lsat = data$LSAT,
+  gpa = data$GPA,
+  urm = as.integer(data$URM),
+  intl = as.integer(data$Intl)
+)
+
+# Compiling and producing posterior samples from the model.
+fit <- stan(model_code = model_string, data = data_list)
+
+# Plotting and summarizing the posterior distribution
+fit
+plot(fit)
+```
+
+# Find mean of posterior alpha and beta
+```{r}
+# Extract posterior samples
+posterior_samples <- as.data.frame(fit)
+
+# Extract alpha and beta from posterior samples
+alpha_samples <- posterior_samples$alpha
+beta_samples <- posterior_samples[, paste0("beta[", 1:4, "]")]
+
+# Calculate summary statistics for alpha and beta
+summary_alpha <- summary(alpha_samples)
+summary_beta <- summary(beta_samples)
+
+# Print summary statistics
+print(summary_alpha)
+print(summary_beta)
+```
+
+
+# obtaining posterior probability of acceptance for fake person
+```{r}
+# Find means of posterior alpha and betas
+mean_alpha = mean(alpha_samples)
+mean_beta1 = mean(beta_samples$`beta[1]`)
+mean_beta2 = mean(beta_samples$`beta[2]`)
+mean_beta3 = mean(beta_samples$`beta[3]`)
+mean_beta4 = mean(beta_samples$`beta[4]`)
+
+# Data for fake person
+x1 = 173
+x2 = 3.703
+x3 = 0
+x4 = 1
+
+# Find probability
+val = mean_alpha + mean_beta1 * x1 + mean_beta2 * x2 + mean_beta3 * x3 + mean_beta4 * x4
+
+prob <- exp(val) / (1 + exp(val))
+prob
+```
